@@ -256,7 +256,8 @@ addEventListener('pointerup', e => { if (drag && drag.id === e.pointerId) drag =
 const joyEl = $('joy'), knob = $('knob'); let joyId = null;
 joyEl.addEventListener('pointerdown', e => { joyId = e.pointerId; joyEl.setPointerCapture(joyId); moveJoy(e); e.stopPropagation(); });
 joyEl.addEventListener('pointermove', e => { if (e.pointerId === joyId) moveJoy(e); });
-joyEl.addEventListener('pointerup', () => { joyId = null; joy.x = joy.y = 0; knob.style.left = knob.style.top = '40px'; });
+const joyEnd = () => { joyId = null; joy.x = joy.y = 0; knob.style.left = knob.style.top = '40px'; };
+joyEl.addEventListener('pointerup', joyEnd); joyEl.addEventListener('pointercancel', joyEnd);
 function moveJoy(e) {
   const r = joyEl.getBoundingClientRect();
   let dx = e.clientX - (r.left + 65), dy = e.clientY - (r.top + 65);
@@ -272,18 +273,22 @@ $('jumpBtn').addEventListener('pointerup', () => keys.Space = false);
 const pBox = new THREE.Box3();
 function playerBox(p) { pBox.min.set(p.x - PR, p.y - PH / 2, p.z - PR); pBox.max.set(p.x + PR, p.y + PH / 2, p.z + PR); return pBox; }
 function collideAxis(axis, delta) {
+  if (delta === 0) return;
   pos[axis] += delta;
   const b = playerBox(pos);
+  // Horizontal checks ignore the floor the player is standing on (step tolerance)
+  if (axis !== 'y') { b.min.y += 0.15; b.max.y -= 0.05; }
   for (const s of solids) {
     if (!s.solid || !b.intersectsBox(s.box)) continue;
     if (axis === 'y') {
-      if (delta < 0) { pos.y = s.box.max.y + PH / 2; onGround = true; s.ridden = true; }
+      if (delta < 0) { pos.y = s.box.max.y + PH / 2 + 0.001; onGround = true; s.ridden = true; }
       else pos.y = s.box.min.y - PH / 2 - 0.001;
       vel.y = 0;
     } else {
       pos[axis] = delta > 0 ? s.box.min[axis] - PR - 0.001 : s.box.max[axis] + PR + 0.001;
     }
     playerBox(pos);
+    if (axis !== 'y') { b.min.y += 0.15; b.max.y -= 0.05; }
   }
 }
 function respawn() {
@@ -342,7 +347,7 @@ function loop(now) {
     }
   }
   const fin = solids.find(s => s.finish);
-  if (fin && onGround && Math.abs(pos.y - PH / 2 - fin.box.max.y) < 0.05 &&
+  if (fin && onGround && Math.abs(pos.y - PH / 2 - fin.box.max.y) < 0.1 &&
       pos.x > fin.box.min.x && pos.x < fin.box.max.x && pos.z > fin.box.min.z && pos.z < fin.box.max.z && !finishLock) {
     finishLock = true; socket.emit('obby:finish');
     setTimeout(() => { finishLock = false; checkpoint = 0; pos.copy(spawn); vel.set(0, 0, 0); }, 2000);
