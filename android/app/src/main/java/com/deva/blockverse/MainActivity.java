@@ -1,6 +1,9 @@
 package com.deva.blockverse;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
+import android.webkit.PermissionRequest;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
@@ -14,6 +17,19 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
     private static final String GAME_URL = "https://roblex.onrender.com";
     private WebView web;
+    private static final int MIC_REQ = 7;
+    private PermissionRequest pendingRequest;
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == MIC_REQ && pendingRequest != null) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED)
+                pendingRequest.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            else pendingRequest.deny();
+            pendingRequest = null;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle b) {
@@ -28,7 +44,23 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean wantsMic = false;
+                    for (String r : request.getResources())
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
+                    if (!wantsMic) { request.deny(); return; }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    } else {
+                        pendingRequest = request;
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MIC_REQ);
+                    }
+                });
+            }
+        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView v, WebResourceRequest req, WebResourceError err) {

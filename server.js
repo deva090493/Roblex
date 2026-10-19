@@ -17,7 +17,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.get('/health', (_, res) => res.json({ ok: true, players: Object.keys(players).length }));
 
-const ROOMS = ['hub', 'obby', 'tag', 'coinrush', 'lava', 'floor'];
+const ROOMS = ['hub', 'obby', 'tag', 'coinrush', 'lava', 'floor', 'fight'];
 const players = {}; // id -> {id,name,color,room,x,y,z,ry,coins,checkpoint}
 const tagState = { it: null, roundEnds: 0 };
 const TAG_ROUND_MS = 90 * 1000;
@@ -27,6 +27,12 @@ function roomPlayers(room) {
 }
 function sanitizeName(n) {
   return String(n || 'Player').replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 16) || 'Player';
+}
+function leaveVoice(socket, p) {
+  if (!p.voice) return;
+  p.voice = false;
+  socket.to(p.room).emit('voice:bye', p.id);
+  io.to(p.room).emit('voice:count', roomPlayers(p.room).filter(o => o.voice).length);
 }
 function pickIt() {
   const list = roomPlayers('tag');
@@ -51,12 +57,14 @@ io.on('connection', socket => {
     const p = players[socket.id];
     if (!p || !ROOMS.includes(room) || p.room === room) return;
     socket.to(p.room).emit('player:leave', p.id);
+    leaveVoice(socket, p);
     socket.leave(p.room);
     if (p.room === 'tag' && tagState.it === p.id) pickIt();
     p.room = room; p.x = 0; p.y = 1; p.z = 0; p.checkpoint = 0;
     socket.join(room);
     socket.emit('room', { room, players: roomPlayers(room) });
     socket.to(room).emit('player:join', p);
+    if (room === 'fight') { p.hp = 100; io.to('fight').emit('fight:hp', { id: p.id, hp: p.hp }); }
     if (room === 'coinrush') socket.emit('coinrush:state', coinState.coins);
     if (room === 'lava') socket.emit('lava:state', { elapsed: Date.now() - lavaState.start });
     if (room === 'floor') socket.emit('floor:phase', floorState);
@@ -91,7 +99,7 @@ io.on('connection', socket => {
 
   socket.on('obby:checkpoint', n => {
     const p = players[socket.id];
-    if (p && p.room === 'obby' && Number.isInteger(n) && n === p.checkpoint + 1) p.checkpoint = n;
+    if (p && p.room === 'obby' && Number.isInteger(n) && n > p.checkpoint && n < 50) p.checkpoint = n;
   });
   socket.on('obby:finish', () => {
     const p = players[socket.id];
@@ -127,6 +135,63 @@ io.on('connection', socket => {
     io.to('lava').emit('toast', `🌋 ${p.name} மேல வந்துட்டாங்க! +30`);
   });
 
+  // ---------- Fight ----------
+  socket.on('fight:punch', () => {
+    const p = players[socket.id];
+    if (!p || p.room !== 'fight') return;
+    const now = Date.now();
+    if (now - (p.lastPunch || 0) < 450) return;
+    p.lastPunch = now;
+    socket.to('fight').emit('fight:swing', p.id);
+    let target = null, best = 2.3;
+    for (const o of roomPlayers('fight')) {
+      if (o.id === p.id) continue;
+      const d = Math.hypot(o.x - p.x, o.y - p.y, o.z - p.z);
+      if (d < best) { best = d; target = o; }
+    }
+    if (!target) return;
+    const dmg = 10 + Math.floor(Math.random() * 6);
+    target.hp = Math.max(0, (target.hp ?? 100) - dmg);
+    const len = Math.hypot(target.x - p.x, target.z - p.z) || 1;
+    io.to('fight').emit('fight:hit', {
+      target: target.id, attacker: p.id, hp: target.hp, dmg,
+      kx: (target.x - p.x) / len, kz: (target.z - p.z) / len
+    });
+    if (target.hp <= 0) {
+      p.coins += 15; socket.emit('coins', p.coins);
+      p.kos = (p.kos || 0) + 1;
+      io.to('fight').emit('toast', `💥 ${p.name} KO பண்ணிட்டாங்க ${target.name}-ஐ! (+15)`);
+      io.to(target.id).emit('fight:ko');
+      target.hp = 100;
+      io.to('fight').emit('fight:hp', { id: target.id, hp: 100 });
+    }
+  });
+  socket.on('fight:fell', () => {
+    const p = players[socket.id];
+    if (!p || p.room !== 'fight') return;
+    p.hp = 100; io.to('fight').emit('fight:hp', { id: p.id, hp: 100 });
+  });
+
+  // ---------- Voice chat (WebRTC signaling, per room) ----------
+  socket.on('voice:join', () => {
+    const p = players[socket.id];
+    if (!p || p.voice) return;
+    const peers = roomPlayers(p.room).filter(o => o.voice && o.id !== p.id).map(o => o.id);
+    p.voice = true;
+    socket.emit('voice:peers', peers);           // new member calls everyone already in voice
+    io.to(p.room).emit('voice:count', roomPlayers(p.room).filter(o => o.voice).length);
+  });
+  socket.on('voice:leave', () => { const p = players[socket.id]; if (p) leaveVoice(socket, p); });
+  socket.on('voice:signal', ({ to, data } = {}) => {
+    const p = players[socket.id], o = players[to];
+    if (!p || !o || !p.voice || !o.voice || o.room !== p.room) return;
+    io.to(to).emit('voice:signal', { from: p.id, data });
+  });
+  socket.on('voice:talking', on => {
+    const p = players[socket.id];
+    if (p && p.voice) socket.to(p.room).emit('voice:talking', { id: p.id, on: !!on });
+  });
+
   socket.on('chat', msg => {
     const p = players[socket.id];
     if (!p) return;
@@ -138,6 +203,7 @@ io.on('connection', socket => {
     const p = players[socket.id];
     if (!p) return;
     socket.to(p.room).emit('player:leave', p.id);
+    leaveVoice(socket, p);
     delete players[socket.id];
     if (tagState.it === socket.id) pickIt();
   });
