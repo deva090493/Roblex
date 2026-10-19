@@ -1,18 +1,19 @@
 // BlockVerse client: Three.js world + Socket.io multiplayer
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { buildHuman, AV_OPTIONS, AV_LABELS, AV_NAMES, AV_PRESETS, sanitizeAvatar } from './avatar.js';
 
-const COLORS = ['#ff5533', '#33aaff', '#44dd66', '#ffcc22', '#bb55ff', '#ff66aa'];
-let myColor = COLORS[0];
 const $ = id => document.getElementById(id);
 
 // ---------- Start screen ----------
-COLORS.forEach((c, i) => {
-  const b = document.createElement('button');
-  b.style.background = c;
-  if (i === 0) b.className = 'sel';
-  b.onclick = () => { myColor = c; [...$('colors').children].forEach(x => x.className = ''); b.className = 'sel'; };
-  $('colors').appendChild(b);
-});
+let myAvatar;
+try { myAvatar = sanitizeAvatar(JSON.parse(localStorage.getItem('bv_avatar'))); } catch { myAvatar = sanitizeAvatar(AV_PRESETS[0]); }
+if (!localStorage.getItem?.('bv_avatar')) myAvatar = sanitizeAvatar(AV_PRESETS[Math.floor(Math.random() * 2)]);
+const myColorOf = () => myAvatar.topColor;
 try { $('nameIn').value = localStorage.getItem('bv_name') || ''; } catch {}
 
 // ---------- Three.js setup ----------
@@ -111,10 +112,56 @@ function updateBursts(dt) {
   }
 }
 
+// Image-based lighting makes materials look much richer
+{
+  const pm = new THREE.PMREMGenerator(renderer);
+  scene.environment = pm.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+  scene.environmentIntensity = 0.45;
+}
+// Post-processing (bloom glow for portals, neon, coins)
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.5, 0.86);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// Graphics quality: low / medium / high
+const isPhone = matchMedia('(pointer:coarse)').matches;
+let quality = 'medium';
+try { quality = localStorage.getItem('bv_quality') || (isPhone ? 'medium' : 'high'); } catch {}
+function setQuality(q) {
+  quality = q;
+  try { localStorage.setItem('bv_quality', q); } catch {}
+  const pr = { low: 1, medium: Math.min(devicePixelRatio, 1.5), high: Math.min(devicePixelRatio, 2) }[q];
+  renderer.setPixelRatio(pr); composer.setPixelRatio(pr);
+  renderer.shadowMap.enabled = q !== 'low';
+  const ms = q === 'high' ? 2048 : 1024;
+  if (sun.shadow.mapSize.x !== ms) { sun.shadow.mapSize.set(ms, ms); sun.shadow.map?.dispose(); sun.shadow.map = null; }
+  scene.environmentIntensity = q === 'low' ? 0.25 : 0.45;
+  scene.traverse(o => { if (o.material) o.material.needsUpdate = true; if (o.userData.hiOnly) o.visible = q === 'high'; });
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+}
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
 });
+
+// Ground texture (grass / dirt noise) for big floors
+const groundCanvas = document.createElement('canvas'); groundCanvas.width = groundCanvas.height = 256;
+{
+  const g = groundCanvas.getContext('2d');
+  g.fillStyle = '#f0f0f0'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 6000; i++) { const v = 200 + Math.random() * 55; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(Math.random() * 256, Math.random() * 256, 2, 3); }
+  for (let i = 0; i < 40; i++) { g.fillStyle = 'rgba(0,0,0,.05)'; g.beginPath(); g.arc(Math.random() * 256, Math.random() * 256, 8 + Math.random() * 20, 0, 7); g.fill(); }
+}
+const groundBase = new THREE.CanvasTexture(groundCanvas);
+groundBase.wrapS = groundBase.wrapT = THREE.RepeatWrapping; groundBase.colorSpace = THREE.SRGBColorSpace; groundBase.anisotropy = 8;
+const groundCache = {};
+function groundTex(w, d) {
+  const k = Math.round(w) + 'x' + Math.round(d);
+  if (!groundCache[k]) { const t = groundBase.clone(); t.needsUpdate = true; t.repeat.set(w / 6, d / 6); groundCache[k] = t; }
+  return groundCache[k];
+}
 
 // ---------- World building ----------
 let world = new THREE.Group(); scene.add(world);
@@ -124,7 +171,7 @@ let spawn = new THREE.Vector3(0, 2, 0);
 function block(x, y, z, w, h, d, color, opts = {}) {
   const mat = opts.opacity
     ? new THREE.MeshStandardMaterial({ color, transparent: true, opacity: opts.opacity, emissive: color, emissiveIntensity: 0.35, roughness: 0.3 })
-    : new THREE.MeshStandardMaterial({ color, map: studTex(w, d), roughness: 0.85, metalness: 0.02, emissive: opts.kill ? color : '#000', emissiveIntensity: opts.kill ? 0.4 : 0 });
+    : new THREE.MeshStandardMaterial({ color, map: (w * d > 1200 && h <= 1.5) ? groundTex(w, d) : studTex(w, d), roughness: 0.85, metalness: 0.02, emissive: opts.kill ? color : '#000', emissiveIntensity: opts.kill ? 0.4 : 0 });
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
   world.add(m);
@@ -142,7 +189,34 @@ function label(text, x, y, z, color = '#fff') {
   sp.position.set(x, y, z); sp.scale.set(4, 1, 1);
   world.add(sp); return sp;
 }
-function clearWorld() { scene.remove(world); world = new THREE.Group(); scene.add(world); solids = []; }
+let water = null;
+function clearWorld() { scene.remove(world); world = new THREE.Group(); scene.add(world); solids = []; water = null; }
+// Instanced grass blades (high quality only)
+function addGrass(cx, cz, w, d, count, color = '#4caf50', avoid = () => false) {
+  const geo = new THREE.ConeGeometry(0.06, 0.45, 3); geo.translate(0, 0.22, 0);
+  const m = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+  const inst = new THREE.InstancedMesh(geo, m, count);
+  const o = new THREE.Object3D(), col = new THREE.Color();
+  let n = 0;
+  for (let i = 0; i < count * 2 && n < count; i++) {
+    const x = cx + (Math.random() - .5) * w, z = cz + (Math.random() - .5) * d;
+    if (avoid(x, z)) continue;
+    o.position.set(x, 0, z); o.rotation.set((Math.random() - .5) * 0.4, Math.random() * 6, (Math.random() - .5) * 0.4);
+    o.scale.setScalar(0.6 + Math.random() * 0.9); o.updateMatrix(); inst.setMatrixAt(n, o.matrix);
+    inst.setColorAt(n, col.set(color).offsetHSL(0, 0, (Math.random() - .5) * 0.15)); n++;
+  }
+  inst.count = n; inst.receiveShadow = true; inst.userData.hiOnly = true; inst.visible = quality === 'high';
+  world.add(inst);
+}
+// Nicer low-poly tree
+function tree(x, z, h = 3, leaf = '#2e7d32') {
+  block(x, h / 2, z, 0.6, h, 0.6, '#6d4c41');
+  const lm = new THREE.MeshStandardMaterial({ color: leaf, roughness: 0.8, flatShading: true });
+  for (const [dx, dy, dz, r] of [[0, h + 0.6, 0, 1.6], [0.8, h + 0.1, 0.3, 1.1], [-0.7, h + 0.2, -0.4, 1.2], [0.1, h + 1.5, 0.1, 1.0]]) {
+    const f = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), lm); f.position.set(x + dx, dy, z + dz);
+    f.rotation.set(Math.random(), Math.random(), 0); f.castShadow = true; world.add(f);
+  }
+}
 
 // ---------- Themes & 100-game catalog ----------
 const THEMES = [
@@ -362,6 +436,8 @@ function buildTycoon() {
   houseGroups = []; plotLabels = []; buyPads = [];
   block(0, -0.5, 0, 120, 1, 120, '#7cb342');
   block(0, 0.02, 0, 120, 0.05, 10, '#9e9e9e', { solid: false }); // street
+  addGrass(0, 0, 118, 118, 6000, '#689f38', (x, z) => Math.abs(z) < 6 || [0,1,2,3,4,5,6,7].some(i => { const p = plotPos(i); return Math.abs(x - p.x) < 11 && Math.abs(z - p.z) < 14; }) || Math.hypot(x, z - 8) < 9);
+  for (const [x, z] of [[-55, -12], [55, 12], [-55, 14], [55, -14]]) tree(x, z, 3);
   for (let i = 0; i < 8; i++) {
     const p = plotPos(i);
     block(p.x, 0.04, p.z, 20, 0.08, 20, '#a5d6a7', { solid: false });
@@ -390,7 +466,7 @@ function applyPlots() {
   plotState.forEach((st, i) => {
     const g = houseGroups[i]; if (!g) return;
     const lvl = st ? st.level : 0;
-    if (g.userData.lvl !== lvl) { buildHouse(g, lvl, i); g.userData.lvl = lvl; }
+    if (g.userData.lvl !== lvl) { buildHouse(g, lvl, i); g.userData.lvl = lvl; refreshCamMeshes(); }
     if (!st) plotLabels[i].setText('🏠 காலி plot');
     else if (st.owner === myId) {
       plotLabels[i].setText(lvl >= HOUSE_PARTS.length ? '🏆 உங்க வீடு — முழுசா ரெடி!' : `உங்க வீடு · அடுத்து: ${HOUSE_PARTS[lvl]} 🪙${HOUSE_COSTS[lvl]}`, '#ffd600');
@@ -558,19 +634,16 @@ function buildHub() {
   clearWorld();
   block(0, -0.5, 0, 60, 1, 60, '#5cb85c');
   // pond
-  const water = new THREE.Mesh(new THREE.CylinderGeometry(5, 5, 0.1, 32), new THREE.MeshStandardMaterial({ color: '#29b6f6', transparent: true, opacity: 0.8, roughness: 0.1, metalness: 0.3 }));
+  water = new THREE.Mesh(new THREE.CylinderGeometry(5, 5, 0.1, 32), new THREE.MeshStandardMaterial({ color: '#29b6f6', transparent: true, opacity: 0.8, roughness: 0.1, metalness: 0.3 }));
   water.position.set(0, 0.06, 0); water.scale.set(0.7, 1, 0.7); world.add(water);
   for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2; block(Math.cos(a) * 3.9, 0.25, Math.sin(a) * 3.9, 0.8, 0.5, 0.8, '#9e9e9e'); }
   // trees
   const rnd = mulberry(3);
   for (let i = 0; i < 16; i++) {
     const a = i / 16 * Math.PI * 2, r = 22 + rnd() * 5;
-    const x = Math.cos(a) * r, z = Math.sin(a) * r, th = 2 + rnd() * 2;
-    block(x, th / 2, z, 1.2, th, 1.2, '#6d4c41');
-    const g = ['#2e7d32', '#388e3c', '#43a047'][i % 3];
-    block(x, th + 1, z, 4, 2, 4, g);
-    block(x, th + 2.6, z, 2.6, 1.4, 2.6, g);
+    tree(Math.cos(a) * r, Math.sin(a) * r, 2.5 + rnd() * 2, ['#2e7d32', '#388e3c', '#43a047'][i % 3]);
   }
+  addGrass(0, 0, 58, 58, 5000, '#4caf50', (x, z) => Math.hypot(x, z) < 5 || Math.abs(Math.hypot(x, z) - 15) < 2.6);
   // flowers
   for (let i = 0; i < 40; i++) {
     const x = (rnd() - .5) * 50, z = (rnd() - .5) * 50;
@@ -742,41 +815,36 @@ function doPunch() {
 }
 
 // ---------- Avatars ----------
-function makeAvatar(color, name) {
-  const g = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({ color });
-  const skin = new THREE.MeshLambertMaterial({ color: '#ffd29c' });
-  const dark = new THREE.MeshLambertMaterial({ color: '#334' });
+function makeAvatar(avatar, name) {
+  const g = buildHuman(avatar);
   const part = (geo, m, x, y, z) => { const p = new THREE.Mesh(geo, m); p.position.set(x, y, z); p.castShadow = true; g.add(p); return p; };
-  part(new THREE.BoxGeometry(0.8, 0.8, 0.4), mat, 0, 1.1, 0);           // torso
-  part(new THREE.BoxGeometry(0.5, 0.5, 0.5), skin, 0, 1.75, 0);         // head
-  part(new THREE.BoxGeometry(0.08, 0.08, 0.02), dark, -0.11, 1.8, 0.26); // eyes
-  part(new THREE.BoxGeometry(0.08, 0.08, 0.02), dark, 0.11, 1.8, 0.26);
-  g.userData.armL = part(new THREE.BoxGeometry(0.3, 0.8, 0.3), skin, -0.55, 1.1, 0);
-  g.userData.armR = part(new THREE.BoxGeometry(0.3, 0.8, 0.3), skin, 0.55, 1.1, 0);
-  g.userData.legL = part(new THREE.BoxGeometry(0.35, 0.7, 0.35), dark, -0.2, 0.35, 0);
-  g.userData.legR = part(new THREE.BoxGeometry(0.35, 0.7, 0.35), dark, 0.2, 0.35, 0);
   // name tag
   const c = document.createElement('canvas'); c.width = 256; c.height = 64;
   const x = c.getContext('2d'); x.font = 'bold 36px system-ui'; x.fillStyle = '#fff'; x.textAlign = 'center';
   x.strokeStyle = '#000'; x.lineWidth = 6; x.strokeText(name, 128, 44); x.fillText(name, 128, 44);
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
-  tag.position.y = 2.4; tag.scale.set(2, 0.5, 1); g.add(tag);
+  tag.position.y = 2.65; tag.scale.set(2, 0.5, 1); tag.renderOrder = 10; g.add(tag);
   // "IT" crown (hidden by default)
-  const crown = part(new THREE.ConeGeometry(0.3, 0.4, 4), new THREE.MeshBasicMaterial({ color: '#ff1744' }), 0, 2.2, 0);
+  const crown = part(new THREE.ConeGeometry(0.3, 0.4, 4), new THREE.MeshBasicMaterial({ color: '#ff1744' }), 0, 2.5, 0);
   crown.visible = false; g.userData.crown = crown;
   const hp = new THREE.Sprite(new THREE.SpriteMaterial({ color: '#00e676', depthTest: false }));
-  hp.position.y = 2.85; hp.scale.set(1.4, 0.12, 1); hp.visible = false;
+  hp.position.y = 3.0; hp.scale.set(1.4, 0.12, 1); hp.visible = false;
   g.add(hp); g.userData.hp = hp; g.userData.punchT = 0;
-  const cap = part(new THREE.BoxGeometry(0.56, 0.16, 0.6), new THREE.MeshStandardMaterial({ color: '#0d47a1' }), 0, 2.05, 0.03);
-  const mask = part(new THREE.BoxGeometry(0.54, 0.14, 0.54), new THREE.MeshStandardMaterial({ color: '#111' }), 0, 1.82, 0);
-  const bag = part(new THREE.BoxGeometry(0.5, 0.6, 0.3), new THREE.MeshStandardMaterial({ color: '#c8a400' }), 0, 1.15, -0.38);
+  const head = g.userData.head;
+  const cap = new THREE.Group(); head.add(cap);
+  { const m1 = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.27, 0.14, 20), new THREE.MeshStandardMaterial({ color: '#0d47a1' })); m1.position.y = 0.2; cap.add(m1);
+    const m2 = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.03, 0.18), new THREE.MeshStandardMaterial({ color: '#0a2f6b' })); m2.position.set(0, 0.14, 0.28); cap.add(m2);
+    const m3 = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.02), new THREE.MeshStandardMaterial({ color: '#ffd600', metalness: 0.8, roughness: 0.3 })); m3.position.set(0, 0.22, 0.28); cap.add(m3); }
+  const mask = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.045, 8, 24), new THREE.MeshStandardMaterial({ color: '#111' }));
+  mask.rotation.x = Math.PI / 2; mask.position.y = 0.04; head.add(mask);
+  const bag = part(new THREE.SphereGeometry(0.26, 14, 12), new THREE.MeshStandardMaterial({ color: '#c8a400', roughness: 0.9 }), 0, 1.35, -0.32);
+  bag.scale.set(1, 1.15, 0.8);
   cap.visible = mask.visible = bag.visible = false;
-  Object.assign(g.userData, { cap, mask, bag, tag });
+  Object.assign(g.userData, { cap, mask, bag, tag, avatar });
   const tc = document.createElement('canvas'); tc.width = tc.height = 64;
   const tx = tc.getContext('2d'); tx.font = '48px system-ui'; tx.textAlign = 'center'; tx.fillText('🎙️', 32, 50);
   const talk = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(tc), depthTest: false }));
-  talk.position.set(0.9, 2.4, 0); talk.scale.set(0.5, 0.5, 1); talk.visible = false;
+  talk.position.set(0.9, 2.6, 0); talk.scale.set(0.5, 0.5, 1); talk.visible = false;
   g.add(talk); g.userData.talk = talk;
   return g;
 }
@@ -789,6 +857,7 @@ function animateLimbs(av, moving, t) {
 
 // ---------- State ----------
 const isTouch = matchMedia('(pointer:coarse)').matches;
+let myName = '';
 let socket, myId, room = 'hub', coins = 0, checkpoint = 0;
 let me = null;
 const others = {}; // id -> {av, target, ry, last}
@@ -803,7 +872,7 @@ let raceBestList = [], buyCool = 0, delivCool = 0;
 let inCar = false, carColor = '#e53935', carPolice = false;
 function setBox(on) {
   if (!me) return;
-  if (on && !boxMesh) { boxMesh = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.9), new THREE.MeshStandardMaterial({ color: '#d7a86e', map: studTex(1, 1) })); boxMesh.position.set(0, 2.45, 0); me.add(boxMesh); }
+  if (on && !boxMesh) { boxMesh = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.9), new THREE.MeshStandardMaterial({ color: '#d7a86e', map: studTex(1, 1) })); boxMesh.position.set(0, 2.62, 0); me.add(boxMesh); }
   if (!on && boxMesh) { me.remove(boxMesh); boxMesh = null; }
 }
 
@@ -815,12 +884,13 @@ function enterRoom(r, list) {
   ({ hub: buildHub, obby: buildObby, tower: buildTower, race: buildRace, tycoon: buildTycoon, heist: buildHeist, hide: buildHide,
      tag: buildTag, coinrush: buildCoinRush, lava: buildLava, floor: buildFloor, fight: buildFight })[mode](levelOf(r));
   pos.copy(spawn); vel.set(0, 0, 0); checkpoint = 0; lavaDead = false; knock.set(0, 0);
-  inCar = mode === 'race'; carColor = myColor; carPolice = false; carrying = false; setBox(false);
+  inCar = mode === 'race'; carColor = myColorOf(); carPolice = false; carrying = false; setBox(false);
   jailedUntil = 0; robT = 0;
   $('modeInfo').style.display = ['race', 'heist', 'hide'].includes(mode) ? 'inline-block' : 'none';
   $('teamBox').style.display = mode === 'heist' ? 'flex' : 'none';
   $('blind').style.display = 'none';
   if (me) { me.userData.cap.visible = me.userData.mask.visible = me.userData.bag.visible = false; me.userData.tag.visible = true; }
+  refreshCamMeshes();
   const saved = loadSave();
   if (saved && solids.some(x => x.checkpoint === saved)) {
     checkpoint = saved; socket.emit('obby:checkpoint', saved); respawn();
@@ -842,11 +912,11 @@ function enterRoom(r, list) {
 }
 function addOther(p) {
   if (p.id === myId || others[p.id]) return;
-  const av = makeAvatar(p.color, p.name);
+  const av = makeAvatar(sanitizeAvatar(p.avatar), p.name);
   av.position.set(p.x, p.y - PH / 2, p.z);
   av.userData.hp.visible = room === 'fight';
   scene.add(av);
-  others[p.id] = { color: p.color, av, target: new THREE.Vector3(p.x, p.y - PH / 2, p.z), ry: p.ry, last: av.position.clone() };
+  others[p.id] = { color: p.color, name: p.name, av, target: new THREE.Vector3(p.x, p.y - PH / 2, p.z), ry: p.ry, last: av.position.clone() };
 }
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.style.opacity = 1;
@@ -971,14 +1041,115 @@ $('micBtn').onclick = () => {
 function loadProfile() {
   try { return { coins: +localStorage.getItem('bv_coins') || 0, house: +localStorage.getItem('bv_house') || 0 }; } catch { return {}; }
 }
+// ---------- Settings: avatar editor + graphics ----------
+let edAvatar = null, edRenderer = null, edScene = null, edCam = null, edModel = null, edTab = 'body';
+const ED_TABS = [['body', '🧍 உடல்', ['body', 'skin', 'eyes']], ['hair', '💇 முடி', ['hair', 'hairColor']], ['top', '👕 மேல்', ['top', 'topColor']],
+  ['bottom', '👖 கீழ்', ['bottom', 'bottomColor', 'shoes']], ['acc', '🕶️ Extra', ['acc']], ['gfx', '⚙️ Graphics', []]];
+function openEditor() {
+  edAvatar = { ...myAvatar };
+  $('editor').style.display = 'flex';
+  if (!edRenderer) {
+    edRenderer = new THREE.WebGLRenderer({ canvas: $('edCanvas'), antialias: true, alpha: true });
+    edRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    edRenderer.toneMapping = THREE.ACESFilmicToneMapping; edRenderer.shadowMap.enabled = true;
+    edScene = new THREE.Scene();
+    edScene.add(new THREE.HemisphereLight('#ffffff', '#887766', 1.2));
+    const dl = new THREE.DirectionalLight('#fff', 2); dl.position.set(2, 4, 3); edScene.add(dl);
+    const floor = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.06, 32), new THREE.MeshStandardMaterial({ color: '#ffb400', roughness: 0.4 }));
+    floor.position.y = -0.03; edScene.add(floor);
+    edCam = new THREE.PerspectiveCamera(32, 1, 0.1, 50); edCam.position.set(0, 1.5, 5.2); edCam.lookAt(0, 1.1, 0);
+    let dragX = null;
+    $('edCanvas').addEventListener('pointerdown', e => dragX = e.clientX);
+    addEventListener('pointerup', () => dragX = null);
+    $('edCanvas').addEventListener('pointermove', e => { if (dragX != null && edModel) { edModel.rotation.y += (e.clientX - dragX) * 0.01; dragX = e.clientX; } });
+  }
+  edRefresh(); renderEdTabs(); if (!edRunning) edLoop();
+}
+function edRefresh() {
+  const ry = edModel ? edModel.rotation.y : 0.4;
+  if (edModel) edScene.remove(edModel);
+  edModel = buildHuman(edAvatar); edModel.rotation.y = ry; edScene.add(edModel);
+}
+let edRunning = false;
+function edLoop() {
+  if ($('editor').style.display === 'none') { edRunning = false; return; }
+  edRunning = true;
+  const c = $('edCanvas'), w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.floor(w * edRenderer.getPixelRatio())) { edRenderer.setSize(w, h, false); edCam.aspect = w / h; edCam.updateProjectionMatrix(); }
+  const t = performance.now() / 1000;
+  edModel.userData.armL.rotation.x = Math.sin(t * 2) * 0.15; edModel.userData.armR.rotation.x = -Math.sin(t * 2) * 0.15;
+  edRenderer.render(edScene, edCam);
+  requestAnimationFrame(edLoop);
+}
+function renderEdTabs() {
+  const tabs = $('edTabs'); tabs.innerHTML = '';
+  for (const [id, name] of ED_TABS) {
+    const b = document.createElement('button'); b.className = 'tab' + (id === edTab ? ' on' : ''); b.textContent = name;
+    b.onclick = () => { edTab = id; renderEdTabs(); }; tabs.appendChild(b);
+  }
+  const box = $('edOpts'); box.innerHTML = '';
+  if (edTab === 'body') {
+    const row = document.createElement('div'); row.className = 'edrow';
+    row.innerHTML = '<label>Ready-made looks</label>';
+    const wrap = document.createElement('div'); wrap.className = 'chips';
+    AV_PRESETS.forEach((pr, i) => { const b = document.createElement('button'); b.className = 'chip'; b.textContent = ['👦', '👧', '🧑‍🎤', '👩‍🎓', '🧔', '😎'][i] + ' Look ' + (i + 1); b.onclick = () => { edAvatar = { ...pr }; edRefresh(); renderEdTabs(); }; wrap.appendChild(b); });
+    row.appendChild(wrap); box.appendChild(row);
+  }
+  if (edTab === 'gfx') {
+    const row = document.createElement('div'); row.className = 'edrow';
+    row.innerHTML = '<label>Graphics quality</label>';
+    const wrap = document.createElement('div'); wrap.className = 'chips';
+    for (const [q, n] of [['low', '🔋 Low (fast)'], ['medium', '⚖️ Medium'], ['high', '✨ High']]) {
+      const b = document.createElement('button'); b.className = 'chip' + (quality === q ? ' on' : ''); b.textContent = n;
+      b.onclick = () => { setQuality(q); renderEdTabs(); }; wrap.appendChild(b);
+    }
+    row.appendChild(wrap); box.appendChild(row);
+    const note = document.createElement('p'); note.className = 'ednote'; note.textContent = 'Phone சூடானா / lag ஆனா Low அல்லது Medium போடுங்க.';
+    box.appendChild(note);
+  }
+  for (const key of (ED_TABS.find(t => t[0] === edTab) || [])[2] || []) {
+    const row = document.createElement('div'); row.className = 'edrow';
+    row.innerHTML = `<label>${AV_LABELS[key]}</label>`;
+    const wrap = document.createElement('div'); wrap.className = 'chips';
+    for (const v of AV_OPTIONS[key]) {
+      const b = document.createElement('button');
+      const isColor = v.startsWith('#');
+      b.className = (isColor ? 'swatch' : 'chip') + (edAvatar[key] === v ? ' on' : '');
+      if (isColor) b.style.background = v; else b.textContent = AV_NAMES[v] || v;
+      b.onclick = () => { edAvatar[key] = v; edRefresh(); renderEdTabs(); };
+      wrap.appendChild(b);
+    }
+    row.appendChild(wrap); box.appendChild(row);
+  }
+}
+function saveAvatar() {
+  myAvatar = sanitizeAvatar(edAvatar);
+  try { localStorage.setItem('bv_avatar', JSON.stringify(myAvatar)); } catch {}
+  if (me) {
+    const nav = makeAvatar(myAvatar, myName);
+    nav.position.copy(me.position); nav.rotation.copy(me.rotation);
+    nav.userData.hp.visible = me.userData.hp.visible;
+    scene.remove(me); me = nav; scene.add(me); boxMesh = null; if (carrying) setBox(true);
+    socket?.emit('avatar:set', myAvatar);
+  }
+  $('editor').style.display = 'none';
+}
+$('edSave').onclick = saveAvatar;
+$('edClose').onclick = () => { $('editor').style.display = 'none'; };
+$('edRandom').onclick = () => { for (const k in AV_OPTIONS) edAvatar[k] = AV_OPTIONS[k][Math.floor(Math.random() * AV_OPTIONS[k].length)]; edRefresh(); renderEdTabs(); };
+$('settingsBtn').onclick = openEditor;
+$('customBtn').onclick = openEditor;
+
 // ---------- Networking ----------
 $('playBtn').onclick = () => {
   const name = $('nameIn').value.trim() || 'Player' + Math.floor(Math.random() * 1000);
   try { localStorage.setItem('bv_name', name); } catch {}
   $('start').style.display = 'none';
-  me = makeAvatar(myColor, name); scene.add(me);
+  me = makeAvatar(myAvatar, name); scene.add(me); myName = name;
+  setQuality(quality);
   socket = io();
-  socket.on('connect', () => socket.emit('join', { name, color: myColor, save: loadProfile() }));
+  socket.on('disconnect', () => toast('📡 Connection போச்சு… மீண்டும் இணைக்கிறோம்'));
+  socket.on('connect', () => socket.emit('join', { name, color: myColorOf(), avatar: myAvatar, save: loadProfile() }));
   socket.on('welcome', d => { myId = d.id; enterRoom('hub', d.players); });
   socket.on('room', d => enterRoom(d.room, d.players));
   socket.on('player:join', addOther);
@@ -1033,6 +1204,13 @@ $('playBtn').onclick = () => {
     if (st.phase === 'wait' && prev.phase !== 'wait' && pos.x < -28) pos.copy(spawn);
   });
   socket.on('race:best', list => { raceBestList = list; });
+  socket.on('avatar:update', d => {
+    const o = others[d.id]; if (!o) return;
+    const nav = makeAvatar(sanitizeAvatar(d.avatar), o.name);
+    nav.position.copy(o.av.position); nav.rotation.copy(o.av.rotation);
+    nav.userData.hp.visible = o.av.userData.hp.visible;
+    scene.remove(o.av); o.av = nav; o.color = d.avatar.topColor; scene.add(nav);
+  });
   socket.on('voice:peers', list => list.forEach(id => makePeer(id, true)));
   socket.on('voice:signal', onSignal);
   socket.on('voice:bye', closePeer);
@@ -1166,7 +1344,7 @@ function markDone(r) {
 }
 function toggleCar() {
   if (modeOf(room) !== 'heist' || jailedUntil) return;
-  if (inCar) { inCar = false; pos.x += 2; return; }
+  if (inCar) { inCar = false; pos.x += Math.cos(yaw) * 2.2; pos.z -= Math.sin(yaw) * 2.2; pos.y += 0.5; return; }
   const c = parkedCars.find(c => Math.hypot(c.x - pos.x, c.z - pos.z) < 3.8);
   if (!c) return;
   if (c.police && myTeam !== 'police') { toast('🚓 Police car — police மட்டும் தான்'); return; }
@@ -1191,7 +1369,11 @@ $('policeBtn').onclick = () => socket?.emit('heist:team', 'police');
 $('carBtn').onclick = () => toggleCar();
 
 // debug hook (used by automated tests)
-window.BV = { pos, get room() { return room; }, get onGround() { return onGround; }, get solids() { return solids.length; } };
+window.BV = { pos, get room() { return room; }, get onGround() { return onGround; }, get solids() { return solids.length; }, get calls() { return renderer.info.render.calls; } };
+
+const camRay = new THREE.Raycaster(), camTarget = new THREE.Vector3(), camDir = new THREE.Vector3();
+let camMeshes = [];
+function refreshCamMeshes() { camMeshes = solids.filter(s => s.solid && !s.mesh.material.transparent && s.box.max.y - s.box.min.y > 1.2).map(s => s.mesh); }
 
 // ---------- Main loop ----------
 let last = 0, sendT = 0, portalCooldown = 0, finishLock = false;
@@ -1273,7 +1455,7 @@ function loop(now) {
       const c = coinMeshes[id];
       c.mesh.rotation.z += dt * 3;
       c.mesh.position.y = c.data.y + Math.sin(t * 3 + c.data.id) * 0.15;
-      if (!c.pending && c.mesh.position.distanceTo(pos) < 1.6) { c.pending = true; socket.emit('coinrush:grab', c.data.id); }
+      if ((!c.pending || now - c.pending > 1500) && c.mesh.position.distanceTo(pos) < 1.6) { c.pending = now; socket.emit('coinrush:grab', c.data.id); }
     }
   }
   // Lava Rise
@@ -1294,7 +1476,7 @@ function loop(now) {
     if (jailedUntil) info = `🔒 Jail · ${Math.max(0, Math.ceil((jailedUntil - performance.now()) / 1000))}s`;
     else if (myTeam === 'robber' && !me_.bag && inV && !inCar) {
       if (robT === 0) socket.emit('heist:robstart');
-      robT += dt; info = `💰 கொள்ளை... ${Math.min(100, Math.floor(robT / 4 * 100))}%`;
+      robT += dt; info = `💰 கொள்ளை... ${Math.max(0, Math.min(100, Math.floor(robT / 4 * 100)))}%`;
       if (robT >= 4.1) { robT = -999; socket.emit('heist:robdone'); }
     } else { if (robT > 0) robT = 0; if (!inV && robT < 0) robT = 0; }
     if (me_.bag) info = '💰 பணம் கையில! 🦹 Hideout-க்கு ஓடுங்க';
@@ -1355,6 +1537,12 @@ function loop(now) {
     pos.y + 1 + Math.sin(camPitch) * dist,
     pos.z + Math.cos(camYaw) * Math.cos(camPitch) * dist
   );
+  // keep the camera out of walls
+  camTarget.set(pos.x, pos.y + 0.9, pos.z);
+  camDir.subVectors(camera.position, camTarget); const camLen = camDir.length(); camDir.normalize();
+  camRay.set(camTarget, camDir); camRay.far = camLen;
+  const hit = camRay.intersectObjects(camMeshes, false)[0];
+  if (hit) camera.position.copy(camTarget).addScaledVector(camDir, Math.max(0.6, hit.distance - 0.25));
   camera.lookAt(pos.x, pos.y + 0.8, pos.z);
 
   // network (15/sec)
@@ -1368,6 +1556,7 @@ function loop(now) {
   updateBursts(dt);
   updateTalkIcons();
 
-  renderer.render(scene, camera);
+  if (water) water.material.color.setHSL(0.55, 0.75, 0.5 + Math.sin(t * 1.5) * 0.04);
+  if (quality === 'high') composer.render(); else renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }

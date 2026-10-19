@@ -30,6 +30,15 @@ const isRace = r => r === 'race' || r.startsWith('race-');
 function roomPlayers(room) {
   return Object.values(players).filter(p => p.room === room);
 }
+const AV_KEYS = ['body', 'skin', 'hair', 'hairColor', 'eyes', 'top', 'topColor', 'bottom', 'bottomColor', 'shoes', 'acc'];
+function sanitizeAvatar(a) {
+  const out = {};
+  if (a && typeof a === 'object') for (const k of AV_KEYS) {
+    const v = a[k];
+    if (typeof v === 'string' && v.length <= 12 && /^[#a-zA-Z0-9]+$/.test(v)) out[k] = v;
+  }
+  return out;
+}
 function sanitizeName(n) {
   return String(n || 'Player').replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 16) || 'Player';
 }
@@ -47,15 +56,17 @@ function pickIt() {
 }
 
 io.on('connection', socket => {
-  socket.on('join', ({ name, color, save } = {}) => {
+  socket.on('join', ({ name, color, save, avatar } = {}) => {
+    if (players[socket.id]) return; // ignore duplicate joins
     const sv = save && typeof save === 'object' ? save : {};
     const clampInt = (v, max) => Math.max(0, Math.min(max, Math.floor(Number(v) || 0)));
     players[socket.id] = {
       id: socket.id, name: sanitizeName(name),
       color: /^#[0-9a-f]{6}$/i.test(color) ? color : '#ff5533',
       room: 'hub', x: 0, y: 1, z: 0, ry: 0, coins: clampInt(sv.coins, 1e6), checkpoint: 0,
-      house: clampInt(sv.house, HOUSE_PARTS.length), car: false
+      house: clampInt(sv.house, HOUSE_PARTS.length), car: false, avatar: sanitizeAvatar(avatar)
     };
+    if (/^#[0-9a-f]{6}$/i.test(players[socket.id].avatar.topColor || '')) players[socket.id].color = players[socket.id].avatar.topColor;
     socket.emit('coins', players[socket.id].coins);
     socket.join('hub');
     socket.emit('welcome', { id: socket.id, players: roomPlayers('hub') });
@@ -155,6 +166,17 @@ io.on('connection', socket => {
     p.coins += 30;
     socket.emit('coins', p.coins);
     io.to('lava').emit('toast', `🌋 ${p.name} மேல வந்துட்டாங்க! +30`);
+  });
+
+  socket.on('avatar:set', a => {
+    const p = players[socket.id];
+    if (!p) return;
+    const now = Date.now();
+    if (now - (p.lastAvatar || 0) < 1000) return;
+    p.lastAvatar = now;
+    p.avatar = sanitizeAvatar(a);
+    if (/^#[0-9a-f]{6}$/i.test(p.avatar.topColor || '')) p.color = p.avatar.topColor;
+    socket.to(p.room).emit('avatar:update', { id: p.id, avatar: p.avatar });
   });
 
   // ---------- House Tycoon ----------

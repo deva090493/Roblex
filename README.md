@@ -10,6 +10,13 @@ Roblox style multiplayer blocky game platform — Hub + mini-games.
 - Phone-க்கு joystick + JUMP button; PC-க்கு WASD + Space, mouse drag = camera
 - Server-side validation (name sanitize, tag check, checkpoint order)
 
+## v3 — High graphics + Human characters
+- 🧑 Human மாதிரி characters: முகம் (கண், புருவம், உதடு), 9 hair styles, 10 hair colors, 7 skin tones
+- 👕 Dress: T-shirt, Shirt, Hoodie, Jacket, Kurta, Frock, Vest, Jersey · Jeans, Pants, Shorts, Skirt, Track, Veshti · shoes · glasses, cap, headset, bag, chain, crown
+- ⚙️ Settings: live 3D preview, 6 ready-made looks, Random, மத்தவங்களுக்கும் உடனே தெரியும்
+- ✨ Graphics: environment lighting, bloom glow, grass, low-poly trees, ground texture, camera சுவருக்குள்ள போகாது
+- 🔋 Graphics quality: Low / Medium / High
+
 ## v2 — 100 Games
 - 🏠 **House Tycoon** — box delivery job (+3), 11 parts வீடு கட்டலாம் (floor → walls → roof → pool → garage → gold statue), வீடு வாடகை income
 - 🚓 **City Heist** — Robber / Police teams, bank vault கொள்ளை, hideout delivery, jail, cars ஓட்டலாம் (E / 🚗)
