@@ -10,6 +10,15 @@ Roblox style multiplayer blocky game platform — Hub + mini-games.
 - Phone-க்கு joystick + JUMP button; PC-க்கு WASD + Space, mouse drag = camera
 - Server-side validation (name sanitize, tag check, checkpoint order)
 
+## v2 — 100 Games
+- 🏠 **House Tycoon** — box delivery job (+3), 11 parts வீடு கட்டலாம் (floor → walls → roof → pool → garage → gold statue), வீடு வாடகை income
+- 🚓 **City Heist** — Robber / Police teams, bank vault கொள்ளை, hideout delivery, jail, cars ஓட்டலாம் (E / 🚗)
+- 👻 **Hide & Seek** — mansion map, seeker 20s கண்ணை மூடுவாங்க, 90s தேடல்
+- 🏎️ **Car Race** — 8 gates, lap timer, best times
+- 🏃 Obby levels 2–51, 🏁 Race tracks 2–21, 🗼 Tower climbs 1–20 — 10 themes (Candy, Space, Ice, Neon...) & difficulty
+- 🎮 Games menu: tabs + search, முடிச்ச games-க்கு ✅
+- Coins, வீடு, save points phone-ல save ஆகும்
+
 ## v1.1 புதுசு
 - 🥊 **Fight Arena** — punch (F / 🥊 button), HP bar, knockback, KO = +15 coins
 - 🔊 **Live Voice chat** — Voice button தொட்டா அதே game-ல இருக்கிறவங்க கூட mic-ல நேரடியா பேசலாம் (WebRTC)
