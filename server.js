@@ -10,7 +10,11 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// Always serve fresh game files so app users get updates immediately
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false, lastModified: false,
+  setHeaders: res => res.set('Cache-Control', 'no-store')
+}));
 app.get('/health', (_, res) => res.json({ ok: true, players: Object.keys(players).length }));
 
 const ROOMS = ['hub', 'obby', 'tag', 'coinrush', 'lava', 'floor'];
