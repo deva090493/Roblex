@@ -63,6 +63,15 @@ function label(text, x, y, z, color = '#fff') {
 }
 function clearWorld() { scene.remove(world); world = new THREE.Group(); scene.add(world); solids = []; }
 
+export const GAMES = [
+  { id: 'obby', name: 'Obby Parkour', icon: '🏃', color: '#ff8800', desc: 'Jump பண்ணி finish வரை போங்க · +50' },
+  { id: 'tag', name: 'Tag Chase', icon: '🏷️', color: '#aa33ff', desc: 'IT கிட்ட மாட்டாம ஓடுங்க · +20' },
+  { id: 'coinrush', name: 'Coin Rush', icon: '🪙', color: '#ffcc00', desc: 'எல்லா coins-ஐயும் சேருங்க · +2/+10' },
+  { id: 'lava', name: 'Lava Rise', icon: '🌋', color: '#ff3d00', desc: 'Lava ஏறுறதுக்கு முன்னாடி மேல ஏறுங்க · +30' },
+  { id: 'floor', name: 'Block Party', icon: '🟦', color: '#2979ff', desc: 'சொன்ன color-ல மட்டும் நில்லுங்க · +3' },
+];
+const ROOM_LABEL = { hub: '🏠 Hub', ...Object.fromEntries(GAMES.map(g => [g.id, g.icon + ' ' + g.name])) };
+
 function buildHub() {
   clearWorld();
   block(0, -0.5, 0, 50, 1, 50, '#5cb85c');
@@ -71,15 +80,16 @@ function buildHub() {
     block(Math.cos(a) * 20, 1.5, Math.sin(a) * 20, 2, 3, 2, '#8b5a2b');
     block(Math.cos(a) * 20, 4, Math.sin(a) * 20, 4, 2, 4, '#2e8b3e');
   }
-  // Portals
-  block(-8, 2, -12, 4, 4, 0.5, '#ff8800', { opacity: 0.6, solid: false, portal: 'obby' });
-  label('🏃 OBBY', -8, 5, -12, '#ffbb55');
-  block(8, 2, -12, 4, 4, 0.5, '#aa33ff', { opacity: 0.6, solid: false, portal: 'tag' });
-  label('🏷️ TAG', 8, 5, -12, '#dd99ff');
-  label('BLOCKVERSE', 0, 7, -18, '#ffd84d');
-  // Coming soon
-  block(0, 2, -14, 4, 4, 0.5, '#666', { opacity: 0.4, solid: false });
-  label('Soon...', 0, 5, -14, '#aaa');
+  // Portals in an arc
+  GAMES.forEach((g, i) => {
+    const a = -Math.PI / 2 + (i - (GAMES.length - 1) / 2) * 0.5;
+    const x = Math.cos(a) * 13, z = Math.sin(a) * 13;
+    const pt = block(x, 2, z, 3.5, 4, 0.5, g.color, { opacity: 0.6, solid: false, portal: g.id });
+    pt.mesh.rotation.y = -a - Math.PI / 2; pt.box.setFromObject(pt.mesh);
+    block(x, 0.1, z, 4, 0.2, 2, '#333');
+    label(g.icon + ' ' + g.name, x, 5, z, '#fff');
+  });
+  label('BLOCKVERSE', 0, 9, -18, '#ffd84d');
   spawn.set(0, 2, 5);
 }
 
@@ -129,6 +139,93 @@ function buildTag() {
 }
 function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 
+function arena(size, floorColor, wallColor) {
+  block(0, -0.5, 0, size, 1, size, floorColor);
+  const h = size / 2;
+  for (const [x, z, w, d] of [[-h, 0, 1, size], [h, 0, 1, size], [0, -h, size, 1], [0, h, size, 1]])
+    block(x, 2, z, w, 4, d, wallColor);
+}
+
+let coinMeshes = {}; // id -> {mesh, data, pending}
+const coinGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.12, 16);
+function addCoin(c) {
+  const m = new THREE.Mesh(coinGeo, new THREE.MeshLambertMaterial({ color: c.gold ? '#ffd700' : '#c0c0c0', emissive: c.gold ? '#553300' : '#222' }));
+  m.rotation.x = Math.PI / 2; m.position.set(c.x, c.y, c.z); m.castShadow = true;
+  if (c.gold) m.scale.setScalar(1.4);
+  world.add(m); coinMeshes[c.id] = { mesh: m, data: c, pending: false };
+}
+function buildCoinRush() {
+  clearWorld(); coinMeshes = {};
+  arena(50, '#7cb342', '#5d4037');
+  const rnd = mulberry(21);
+  for (let i = 0; i < 10; i++) block((rnd() - .5) * 38, 0.75, (rnd() - .5) * 38, 3, 1.5, 3, '#a1887f');
+  block(0, 1.5, 22, 4, 3, 0.5, '#33aaff', { opacity: 0.6, solid: false, portal: 'hub' });
+  label('🏠 Hub', 0, 4, 22);
+  spawn.set(0, 2, 0);
+}
+
+const LAVA_RATE = 0.3, LAVA_START = -2;
+let lava = null, lavaT0 = 0, lavaDead = false;
+function buildLava() {
+  clearWorld();
+  block(0, -0.5, 0, 30, 1, 30, '#616161');
+  // spiral tower
+  const steps = 30;
+  for (let i = 0; i < steps; i++) {
+    const a = i * 0.55, r = 7 + Math.sin(i * 1.3) * 1.5;
+    block(Math.cos(a) * r, 0.6 + i * 1.15, Math.sin(a) * r, 2.6, 0.5, 2.6, i % 2 ? '#8d6e63' : '#bcaaa4');
+  }
+  block(0, 15, 0, 3, 32, 3, '#424242'); // center pillar
+  const top = block(0, 35, 0, 7, 0.5, 7, '#ffd700', { lavaTop: true });
+  label('🏆 TOP', 0, 38, 0, '#ffd700');
+  // stairs from top platform edge down to last step
+  const lastA = (steps - 1) * 0.55, lastR = 7 + Math.sin((steps - 1) * 1.3) * 1.5;
+  block(Math.cos(lastA) * lastR * 0.6, 34.4, Math.sin(lastA) * lastR * 0.6, 2.6, 0.5, 2.6, '#bcaaa4');
+  // spectator cloud
+  block(28, 44, 0, 8, 0.5, 8, '#eeeeee');
+  label('👀 அடுத்த round-க்கு wait', 28, 47, 0);
+  lavaT0 = performance.now();
+  lava = new THREE.Mesh(new THREE.BoxGeometry(34, 1, 34), new THREE.MeshBasicMaterial({ color: '#ff4500', transparent: true, opacity: 0.85 }));
+  world.add(lava);
+  block(14, 1.5, 0, 0.5, 3, 4, '#33aaff', { opacity: 0.6, solid: false, portal: 'hub' });
+  label('🏠 Hub', 14, 4, 0);
+  spawn.set(0, 2, 10);
+}
+function lavaY() { return LAVA_START + ((performance.now() - lavaT0) / 1000) * LAVA_RATE; }
+
+const FLOOR_PALETTE = ['#e53935', '#43a047', '#1e88e5', '#fdd835', '#8e24aa'];
+const FLOOR_NAMES = ['சிவப்பு', 'பச்சை', 'நீலம்', 'மஞ்சள்', 'ஊதா'];
+let tiles = [], floorPhase = { color: 0, drop: false, round: 0 };
+function buildFloor() {
+  clearWorld(); tiles = [];
+  const N = 10, S = 3;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++)
+    tiles.push(block((i - N / 2 + .5) * S, -0.25, (j - N / 2 + .5) * S, S - 0.05, 0.5, S - 0.05, '#fff'));
+  colorTiles(0);
+  block(0, 9, -22, 8, 0.5, 6, '#eeeeee'); // spectator
+  label('👀 Wait', 0, 12, -22);
+  block(0, 10, -24.5, 3, 3, 0.5, '#33aaff', { opacity: 0.6, solid: false, portal: 'hub' });
+  spawn.set(0, 3, 0);
+}
+function colorTiles(round) {
+  const rnd = mulberry(round * 7919 + 1);
+  for (const t of tiles) { t.colorIdx = Math.floor(rnd() * FLOOR_PALETTE.length); t.mesh.material.color.set(FLOOR_PALETTE[t.colorIdx]); }
+}
+function applyFloor() {
+  if (room !== 'floor') return;
+  colorTiles(floorPhase.round);
+  for (const t of tiles) {
+    const keep = !floorPhase.drop || t.colorIdx === floorPhase.color;
+    t.solid = keep; t.mesh.visible = keep;
+  }
+  const bar = $('floorBar');
+  bar.style.display = 'block';
+  bar.style.background = FLOOR_PALETTE[floorPhase.color];
+  bar.textContent = floorPhase.drop ? '⬇️ DROP!' : `${FLOOR_NAMES[floorPhase.color]} color-ல நில்லுங்க!`;
+  // spectators rejoin when the floor comes back
+  if (!floorPhase.drop && pos.y > 6) { pos.copy(spawn); vel.set(0, 0, 0); }
+}
+
 // ---------- Avatars ----------
 function makeAvatar(color, name) {
   const g = new THREE.Group();
@@ -175,9 +272,11 @@ const PR = 0.4, PH = 2; // player radius/height
 function enterRoom(r, list) {
   room = r;
   for (const id in others) { scene.remove(others[id].av); delete others[id]; }
-  ({ hub: buildHub, obby: buildObby, tag: buildTag })[r]();
-  pos.copy(spawn); vel.set(0, 0, 0); checkpoint = 0;
-  $('roomLabel').textContent = { hub: '🏠 Hub', obby: '🏃 Obby', tag: '🏷️ Tag' }[r];
+  ({ hub: buildHub, obby: buildObby, tag: buildTag, coinrush: buildCoinRush, lava: buildLava, floor: buildFloor })[r]();
+  pos.copy(spawn); vel.set(0, 0, 0); checkpoint = 0; lavaDead = false;
+  if (r !== 'lava') lava = null;
+  $('floorBar').style.display = 'none';
+  $('roomLabel').textContent = ROOM_LABEL[r];
   $('hubBtn').style.display = r === 'hub' ? 'none' : 'inline-block';
   $('tagInfo').style.display = r === 'tag' ? 'inline-block' : 'none';
   me.userData.crown.visible = false;
@@ -226,6 +325,18 @@ $('playBtn').onclick = () => {
     tagState = s; updateTagUI();
     if (room === 'tag') toast(s.it === myId ? '🔴 நீங்க தான் IT! எல்லாரையும் பிடிங்க' : '🏃 ஓடுங்க! IT கிட்ட மாட்டாதீங்க');
   });
+  socket.on('coinrush:state', list => { if (room === 'coinrush') list.forEach(addCoin); });
+  socket.on('coinrush:taken', ({ id, by, next }) => {
+    const c = coinMeshes[id];
+    if (c) { world.remove(c.mesh); delete coinMeshes[id]; }
+    if (room === 'coinrush') addCoin(next);
+    if (by === myId) toast(c && c.data.gold ? '✨ Gold coin! +10' : '🪙 +2');
+  });
+  socket.on('lava:state', d => {
+    lavaT0 = performance.now() - d.elapsed;
+    if (d.reset && room === 'lava') { lavaDead = false; solids.forEach(x => x.claimed = false); pos.copy(spawn); vel.set(0, 0, 0); toast('🌋 புது round! மேல ஏறுங்க'); }
+  });
+  socket.on('floor:phase', st => { floorPhase = st; applyFloor(); });
   if (matchMedia('(pointer:coarse)').matches) {
     $('joy').style.display = 'block'; $('jumpBtn').style.display = 'block'; $('help').style.display = 'none';
   }
@@ -233,6 +344,19 @@ $('playBtn').onclick = () => {
   requestAnimationFrame(loop);
 };
 $('hubBtn').onclick = () => socket.emit('switchRoom', 'hub');
+function renderMenu() {
+  const grid = $('gameGrid'); grid.innerHTML = '';
+  for (const g of GAMES) {
+    const card = document.createElement('button');
+    card.className = 'gcard';
+    card.innerHTML = `<div class="gthumb" style="background:${g.color}">${g.icon}</div><b>${g.name}</b><small>${g.desc}</small>`;
+    card.onclick = () => { $('menu').style.display = 'none'; if (room !== g.id) socket.emit('switchRoom', g.id); };
+    grid.appendChild(card);
+  }
+}
+renderMenu();
+$('gamesBtn').onclick = () => { $('menu').style.display = 'flex'; };
+$('menuClose').onclick = () => { $('menu').style.display = 'none'; };
 $('chatForm').onsubmit = e => {
   e.preventDefault();
   const v = $('chatIn').value.trim();
@@ -292,6 +416,8 @@ function collideAxis(axis, delta) {
   }
 }
 function respawn() {
+  if (room === 'lava' && lavaDead) { pos.set(28, 46, 0); vel.set(0, 0, 0); return; }
+  if (room === 'floor') { pos.set(0, 11, -22); vel.set(0, 0, 0); return; }
   if (room === 'obby' && checkpoint > 0) {
     const c = solids.find(s => s.checkpoint === checkpoint);
     pos.set(c.mesh.position.x, c.mesh.position.y + 1.5, c.mesh.position.z);
@@ -351,6 +477,24 @@ function loop(now) {
       pos.x > fin.box.min.x && pos.x < fin.box.max.x && pos.z > fin.box.min.z && pos.z < fin.box.max.z && !finishLock) {
     finishLock = true; socket.emit('obby:finish');
     setTimeout(() => { finishLock = false; checkpoint = 0; pos.copy(spawn); vel.set(0, 0, 0); }, 2000);
+  }
+
+  // Coin Rush
+  if (room === 'coinrush') {
+    for (const id in coinMeshes) {
+      const c = coinMeshes[id];
+      c.mesh.rotation.z += dt * 3;
+      c.mesh.position.y = c.data.y + Math.sin(t * 3 + c.data.id) * 0.15;
+      if (!c.pending && c.mesh.position.distanceTo(pos) < 1.6) { c.pending = true; socket.emit('coinrush:grab', c.data.id); }
+    }
+  }
+  // Lava Rise
+  if (room === 'lava' && lava) {
+    const ly = Math.min(lavaY(), 34);
+    lava.position.set(0, ly - 0.5, 0);
+    if (!lavaDead && pos.y - PH / 2 < ly) { lavaDead = true; toast('🔥 Lava-ல விழுந்துட்டீங்க!'); respawn(); }
+    const topS = solids.find(s => s.lavaTop);
+    if (topS && onGround && pos.y - PH / 2 >= topS.box.max.y - 0.05 && !lavaDead && !topS.claimed) { topS.claimed = true; socket.emit('lava:win'); }
   }
 
   // my avatar
